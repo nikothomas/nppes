@@ -8,14 +8,12 @@
 #[cfg(feature = "download")]
 use std::path::{Path, PathBuf};
 #[cfg(feature = "download")]
-use std::io::Write;
-#[cfg(feature = "download")]
 use reqwest;
 #[cfg(feature = "download")]
 use tokio;
-#[cfg(feature = "download")]
-use tempfile::TempDir;
 
+#[cfg(all(feature = "download", feature = "progress"))]
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{Result, NppesError};
 
@@ -102,22 +100,7 @@ impl NppesDownloader {
         // Move config fields out before borrowing self mutably
         let max_file_size = self.config.max_file_size;
         let download_dir_opt = self.config.download_dir.clone();
-        let verify_ssl = self.config.verify_ssl;
-        let timeout_seconds = self.config.timeout_seconds;
-        let user_agent = self.config.user_agent.clone();
 
-        let client = if self.client.is_none() {
-            let mut builder = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(timeout_seconds))
-                .danger_accept_invalid_certs(!verify_ssl);
-            if let Some(user_agent) = &user_agent {
-                builder = builder.user_agent(user_agent.as_str());
-            }
-            self.client = Some(builder.build().map_err(|e| NppesError::Custom {
-                message: format!("Failed to create HTTP client: {}", e),
-                suggestion: Some("Check your network configuration".to_string()),
-            })?);
-        };
         let client = self.get_client().await?;
         
         // Make initial request to get content length
