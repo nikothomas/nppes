@@ -37,7 +37,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-nppes = "0.1.0"
+nppes = "0.0.3
 ```
 
 The CLI binary is called `npcli`.
