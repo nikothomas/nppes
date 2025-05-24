@@ -485,7 +485,7 @@ impl PracticeLocationSchema {
         vec![
             "NPI",
             "Provider Secondary Practice Location Address- Address Line 1",
-            "Provider Secondary Practice Location Address- Address Line 2",
+            "Provider Secondary Practice Location Address-  Address Line 2",
             "Provider Secondary Practice Location Address - City Name",
             "Provider Secondary Practice Location Address - State Name", 
             "Provider Secondary Practice Location Address - Postal Code",
@@ -549,7 +549,7 @@ impl EndpointSchema {
             "Affiliation Address City",
             "Affiliation Address State", 
             "Affiliation Address Country",
-            "Affiliation Address Line Postal Code",
+            "Affiliation Address Postal Code",
         ]
     }
     

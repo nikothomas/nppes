@@ -286,15 +286,15 @@ impl NppesDownloader {
             
             // Categorize extracted files
             let filename = file.name().to_lowercase();
-            if filename.contains("npidata_pfile") && filename.ends_with(".csv") {
+            if filename.contains("npidata_pfile") && filename.ends_with(".csv") && !filename.contains("_fileheader") {
                 extracted_files.main_data_file = Some(file_path.clone());
-            } else if filename.contains("nucc_taxonomy") && filename.ends_with(".csv") {
+            } else if filename.contains("nucc_taxonomy") && filename.ends_with(".csv") && !filename.contains("_fileheader") {
                 extracted_files.taxonomy_file = Some(file_path.clone());
-            } else if filename.contains("othername_pfile") && filename.ends_with(".csv") {
+            } else if filename.contains("othername_pfile") && filename.ends_with(".csv") && !filename.contains("_fileheader") {
                 extracted_files.other_names_file = Some(file_path.clone());
-            } else if filename.contains("pl_pfile") && filename.ends_with(".csv") {
+            } else if filename.contains("pl_pfile") && filename.ends_with(".csv") && !filename.contains("_fileheader") {
                 extracted_files.practice_locations_file = Some(file_path.clone());
-            } else if filename.contains("endpoint_pfile") && filename.ends_with(".csv") {
+            } else if filename.contains("endpoint_pfile") && filename.ends_with(".csv") && !filename.contains("_fileheader") {
                 extracted_files.endpoints_file = Some(file_path.clone());
             }
             
