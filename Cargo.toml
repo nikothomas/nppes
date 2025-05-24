@@ -1,0 +1,57 @@
+[package]
+name = "nppes"
+version = "0.2.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A comprehensive Rust library for working with NPPES healthcare provider data"
+repository = "https://github.com/yourusername/nppes"
+license = "MIT OR Apache-2.0"
+keywords = ["nppes", "healthcare", "npi", "provider", "data"]
+categories = ["data-structures", "parser-implementations"]
+
+[dependencies]
+# Core dependencies
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+csv = "1.3"
+
+# Progress reporting and parallelism
+indicatif = "0.17"
+rayon = "1.10"
+
+# Error handling enhancements
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Configuration
+config = "0.14"
+directories = "5.0"
+toml = "0.8"
+lazy_static = "1.5"
+
+# Optional dependencies for exports
+polars = { version = "0.44", optional = true, features = ["lazy", "csv", "json", "parquet"] }
+arrow = { version = "54", optional = true }
+parquet = { version = "54", optional = true }
+
+# Indexing and search (optional)
+tantivy = { version = "0.24", optional = true }
+
+[features]
+default = ["progress", "parallel"]
+progress = []
+parallel = []
+dataframe = ["polars"]
+arrow-export = ["arrow", "parquet"]
+full-text-search = ["tantivy"]
+all = ["progress", "parallel", "dataframe", "arrow-export", "full-text-search"]
+
+[dev-dependencies]
+tempfile = "3.10"
+criterion = "0.5"
+
+[[bench]]
+name = "nppes_benchmark"
+harness = false
+
