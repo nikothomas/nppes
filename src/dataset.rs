@@ -12,6 +12,58 @@ use crate::data_types::*;
 use crate::reader::NppesReader;
 use crate::analytics::NppesAnalytics;
 
+#[cfg(feature = "download")]
+use crate::download::{NppesDownloader, DownloadConfig, ExtractedFiles};
+
+/// Data source - either a local file path or a URL
+#[derive(Debug, Clone)]
+pub enum DataSource {
+    /// Local file path
+    File(PathBuf),
+    /// URL to download from
+    Url(String),
+}
+
+impl DataSource {
+    /// Create a DataSource from a string (auto-detects URL vs file path)
+    pub fn from_str(s: &str) -> Self {
+        if s.starts_with("http://") || s.starts_with("https://") {
+            DataSource::Url(s.to_string())
+        } else {
+            DataSource::File(PathBuf::from(s))
+        }
+    }
+    
+    /// Create a DataSource from a path
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Self {
+        DataSource::File(path.as_ref().to_path_buf())
+    }
+}
+
+impl From<&str> for DataSource {
+    fn from(s: &str) -> Self {
+        DataSource::from_str(s)
+    }
+}
+
+impl From<String> for DataSource {
+    fn from(s: String) -> Self {
+        DataSource::from_str(&s)
+    }
+}
+
+impl From<PathBuf> for DataSource {
+    fn from(path: PathBuf) -> Self {
+        DataSource::File(path)
+    }
+}
+
+impl From<&Path> for DataSource {
+    fn from(path: &Path) -> Self {
+        DataSource::File(path.to_path_buf())
+    }
+}
+
 /// Builder for loading a complete NPPES dataset
 /// 
 /// # Example
@@ -26,16 +78,30 @@ use crate::analytics::NppesAnalytics;
 ///     .build()?;
 /// # Ok::<(), nppes::NppesError>(())
 /// ```
+/// 
+/// # Example with URL
+/// ```no_run
+/// # use nppes::dataset::NppesDatasetBuilder;
+/// # #[cfg(feature = "download")]
+/// # tokio_test::block_on(async {
+/// let dataset = NppesDatasetBuilder::new()
+///     .from_url("https://download.cms.gov/nppes/NPPES_Data_Dissemination_May_2025_V2.zip")
+///     .build_async().await?;
+/// # Ok::<(), nppes::NppesError>(())
+/// # });
+/// ```
 pub struct NppesDatasetBuilder {
-    main_data_path: Option<PathBuf>,
-    taxonomy_path: Option<PathBuf>,
-    other_names_path: Option<PathBuf>,
-    practice_locations_path: Option<PathBuf>,
-    endpoints_path: Option<PathBuf>,
+    main_data_source: Option<DataSource>,
+    taxonomy_source: Option<DataSource>,
+    other_names_source: Option<DataSource>,
+    practice_locations_source: Option<DataSource>,
+    endpoints_source: Option<DataSource>,
     skip_invalid_records: bool,
     build_indexes: bool,
     #[cfg(feature = "progress")]
     show_progress: bool,
+    #[cfg(feature = "download")]
+    download_config: Option<DownloadConfig>,
 }
 
 impl Default for NppesDatasetBuilder {
@@ -48,45 +114,61 @@ impl NppesDatasetBuilder {
     /// Create a new dataset builder
     pub fn new() -> Self {
         Self {
-            main_data_path: None,
-            taxonomy_path: None,
-            other_names_path: None,
-            practice_locations_path: None,
-            endpoints_path: None,
+            main_data_source: None,
+            taxonomy_source: None,
+            other_names_source: None,
+            practice_locations_source: None,
+            endpoints_source: None,
             skip_invalid_records: false,
             build_indexes: true,
             #[cfg(feature = "progress")]
             show_progress: true,
+            #[cfg(feature = "download")]
+            download_config: None,
         }
     }
     
-    /// Set the path to the main NPPES data file
-    pub fn main_data<P: AsRef<Path>>(mut self, path: P) -> Self {
-        self.main_data_path = Some(path.as_ref().to_path_buf());
+    /// Set the path or URL to the main NPPES data file
+    pub fn main_data<S: Into<DataSource>>(mut self, source: S) -> Self {
+        self.main_data_source = Some(source.into());
         self
     }
     
-    /// Set the path to the taxonomy reference file
-    pub fn taxonomy_reference<P: AsRef<Path>>(mut self, path: P) -> Self {
-        self.taxonomy_path = Some(path.as_ref().to_path_buf());
+    /// Set the path or URL to the taxonomy reference file
+    pub fn taxonomy_reference<S: Into<DataSource>>(mut self, source: S) -> Self {
+        self.taxonomy_source = Some(source.into());
         self
     }
     
-    /// Set the path to the other names file
-    pub fn other_names<P: AsRef<Path>>(mut self, path: P) -> Self {
-        self.other_names_path = Some(path.as_ref().to_path_buf());
+    /// Set the path or URL to the other names file
+    pub fn other_names<S: Into<DataSource>>(mut self, source: S) -> Self {
+        self.other_names_source = Some(source.into());
         self
     }
     
-    /// Set the path to the practice locations file
-    pub fn practice_locations<P: AsRef<Path>>(mut self, path: P) -> Self {
-        self.practice_locations_path = Some(path.as_ref().to_path_buf());
+    /// Set the path or URL to the practice locations file
+    pub fn practice_locations<S: Into<DataSource>>(mut self, source: S) -> Self {
+        self.practice_locations_source = Some(source.into());
         self
     }
     
-    /// Set the path to the endpoints file
-    pub fn endpoints<P: AsRef<Path>>(mut self, path: P) -> Self {
-        self.endpoints_path = Some(path.as_ref().to_path_buf());
+    /// Set the path or URL to the endpoints file
+    pub fn endpoints<S: Into<DataSource>>(mut self, source: S) -> Self {
+        self.endpoints_source = Some(source.into());
+        self
+    }
+    
+    /// Load data from a URL (ZIP file containing NPPES data)
+    #[cfg(feature = "download")]
+    pub fn from_url<S: Into<String>>(mut self, url: S) -> Self {
+        self.main_data_source = Some(DataSource::Url(url.into()));
+        self
+    }
+    
+    /// Set download configuration
+    #[cfg(feature = "download")]
+    pub fn with_download_config(mut self, config: DownloadConfig) -> Self {
+        self.download_config = Some(config);
         self
     }
     
@@ -109,63 +191,194 @@ impl NppesDatasetBuilder {
         self
     }
     
-    /// Build the dataset, loading all specified files
+    /// Build the dataset, loading all specified files (synchronous version)
     pub fn build(self) -> Result<NppesDataset> {
-        let main_path = self.main_data_path
+        #[cfg(feature = "download")]
+        {
+            let rt = tokio::runtime::Runtime::new().map_err(|e| NppesError::Custom {
+                message: format!("Failed to create async runtime: {}", e),
+                suggestion: Some("Use build_async() if you're already in an async context".to_string()),
+            })?;
+            
+            rt.block_on(self.build_async())
+        }
+        
+        #[cfg(not(feature = "download"))]
+        {
+            // For non-download builds, we need to handle this synchronously
+            // Since we can't use async, we'll need to manually handle the sync case
+            let main_source = self.main_data_source
+                .ok_or_else(|| NppesError::Custom {
+                    message: "Main data source not specified".to_string(),
+                    suggestion: Some("Use .main_data() to specify the main NPPES data source".to_string()),
+                })?;
+            
+            // Only file sources are supported without download feature
+            match main_source {
+                DataSource::File(path) => {
+                    let resolved_sources = ResolvedSources {
+                        main_data_path: path,
+                        taxonomy_path: self.taxonomy_source.as_ref().and_then(|s| match s {
+                            DataSource::File(p) => Some(p.clone()),
+                            DataSource::Url(_) => None,
+                        }),
+                        other_names_path: self.other_names_source.as_ref().and_then(|s| match s {
+                            DataSource::File(p) => Some(p.clone()),
+                            DataSource::Url(_) => None,
+                        }),
+                        practice_locations_path: self.practice_locations_source.as_ref().and_then(|s| match s {
+                            DataSource::File(p) => Some(p.clone()),
+                            DataSource::Url(_) => None,
+                        }),
+                        endpoints_path: self.endpoints_source.as_ref().and_then(|s| match s {
+                            DataSource::File(p) => Some(p.clone()),
+                            DataSource::Url(_) => None,
+                        }),
+                    };
+                    
+                    Self::build_from_resolved_sources_static(
+                        resolved_sources,
+                        self.skip_invalid_records,
+                        self.build_indexes,
+                        #[cfg(feature = "progress")]
+                        self.show_progress,
+                    )
+                }
+                DataSource::Url(_) => {
+                    Err(NppesError::feature_required("download"))
+                }
+            }
+        }
+    }
+    
+    /// Build the dataset from internet sources (async version)
+    pub async fn build_async(self) -> Result<NppesDataset> {
+        let main_source = self.main_data_source
             .ok_or_else(|| NppesError::Custom {
-                message: "Main data file path not specified".to_string(),
-                suggestion: Some("Use .main_data() to specify the main NPPES data file".to_string()),
+                message: "Main data source not specified".to_string(),
+                suggestion: Some("Use .main_data() or .from_url() to specify the main NPPES data source".to_string()),
             })?;
         
         println!("Loading NPPES dataset...");
         
+        // Extract all fields we need before moving them
+        let taxonomy_source = self.taxonomy_source;
+        let other_names_source = self.other_names_source;
+        let practice_locations_source = self.practice_locations_source;
+        let endpoints_source = self.endpoints_source;
+        let skip_invalid_records = self.skip_invalid_records;
+        let build_indexes = self.build_indexes;
+        #[cfg(feature = "progress")]
+        let show_progress = self.show_progress;
+        #[cfg(feature = "download")]
+        let download_config = self.download_config;
+        
+        let resolved_sources = Self::resolve_sources_static(
+            main_source,
+            taxonomy_source,
+            other_names_source,
+            practice_locations_source,
+            endpoints_source,
+            #[cfg(feature = "download")]
+            download_config,
+            #[cfg(not(feature = "download"))]
+            None,
+        ).await?;
+        
+        Self::build_from_resolved_sources_static(
+            resolved_sources,
+            skip_invalid_records,
+            build_indexes,
+            #[cfg(feature = "progress")]
+            show_progress,
+        )
+    }
+    
+    /// Build dataset from resolved sources (static version)
+    fn build_from_resolved_sources_static(
+        resolved_sources: ResolvedSources,
+        skip_invalid_records: bool,
+        build_indexes: bool,
+        #[cfg(feature = "progress")]
+        show_progress: bool,
+    ) -> Result<NppesDataset> {
         // Create reader with progress support
         let mut reader = NppesReader::new()
-            .with_skip_invalid_records(self.skip_invalid_records);
+            .with_skip_invalid_records(skip_invalid_records);
         
         #[cfg(feature = "progress")]
-        if self.show_progress {
-            reader = reader.with_progress(|info| {
-                if info.current_records % 10000 == 0 {
-                    println!("Processed {} records...", info.current_records);
-                }
-            });
+        if show_progress {
+            // When showing progress, disable the default progress bar from the reader
+            // and don't use the callback that prints to stdout
+            reader = reader.with_progress_bar(false);
         }
         
         // Load main data
-        println!("Loading main provider data from: {}", main_path.display());
-        let providers = reader.load_main_data(&main_path)?;
+        #[cfg(feature = "progress")]
+        if !show_progress {
+            println!("Loading main provider data from: {}", resolved_sources.main_data_path.display());
+        }
         
-        // Load taxonomy reference if provided
-        let taxonomy_map = if let Some(path) = self.taxonomy_path {
+        #[cfg(not(feature = "progress"))]
+        println!("Loading main provider data from: {}", resolved_sources.main_data_path.display());
+        
+        let providers = reader.load_main_data(&resolved_sources.main_data_path)?;
+        
+        // Load other data files
+        let taxonomy_map = if let Some(path) = resolved_sources.taxonomy_path {
+            #[cfg(feature = "progress")]
+            if !show_progress {
+                println!("Loading taxonomy reference from: {}", path.display());
+            }
+            
+            #[cfg(not(feature = "progress"))]
             println!("Loading taxonomy reference from: {}", path.display());
+            
             let taxonomies = reader.load_taxonomy_data(&path)?;
             Some(create_taxonomy_map(taxonomies))
         } else {
             None
         };
         
-        // Load other names if provided
-        let other_names_map = if let Some(path) = self.other_names_path {
+        let other_names_map = if let Some(path) = resolved_sources.other_names_path {
+            #[cfg(feature = "progress")]
+            if !show_progress {
+                println!("Loading other names from: {}", path.display());
+            }
+            
+            #[cfg(not(feature = "progress"))]
             println!("Loading other names from: {}", path.display());
+            
             let other_names = reader.load_other_name_data(&path)?;
             Some(create_other_names_map(other_names))
         } else {
             None
         };
         
-        // Load practice locations if provided
-        let practice_locations_map = if let Some(path) = self.practice_locations_path {
+        let practice_locations_map = if let Some(path) = resolved_sources.practice_locations_path {
+            #[cfg(feature = "progress")]
+            if !show_progress {
+                println!("Loading practice locations from: {}", path.display());
+            }
+            
+            #[cfg(not(feature = "progress"))]
             println!("Loading practice locations from: {}", path.display());
+            
             let locations = reader.load_practice_location_data(&path)?;
             Some(create_practice_locations_map(locations))
         } else {
             None
         };
         
-        // Load endpoints if provided
-        let endpoints_map = if let Some(path) = self.endpoints_path {
+        let endpoints_map = if let Some(path) = resolved_sources.endpoints_path {
+            #[cfg(feature = "progress")]
+            if !show_progress {
+                println!("Loading endpoints from: {}", path.display());
+            }
+            
+            #[cfg(not(feature = "progress"))]
             println!("Loading endpoints from: {}", path.display());
+            
             let endpoints = reader.load_endpoint_data(&path)?;
             Some(create_endpoints_map(endpoints))
         } else {
@@ -184,13 +397,96 @@ impl NppesDatasetBuilder {
             taxonomy_index: None,
         };
         
-        if self.build_indexes {
+        if build_indexes {
+            #[cfg(feature = "progress")]
+            if !show_progress {
+                println!("Building indexes...");
+            }
+            
+            #[cfg(not(feature = "progress"))]
             println!("Building indexes...");
+            
             dataset.build_indexes();
         }
         
+        #[cfg(feature = "progress")]
+        if !show_progress {
+            println!("Dataset loaded successfully!");
+        }
+        
+        #[cfg(not(feature = "progress"))]
         println!("Dataset loaded successfully!");
+        
         Ok(dataset)
+    }
+    
+    /// Resolve data sources (download URLs if needed) - static version
+    async fn resolve_sources_static(
+        main_source: DataSource,
+        taxonomy_source: Option<DataSource>,
+        other_names_source: Option<DataSource>,
+        practice_locations_source: Option<DataSource>,
+        endpoints_source: Option<DataSource>,
+        #[cfg(feature = "download")]
+        download_config: Option<DownloadConfig>,
+        #[cfg(not(feature = "download"))]
+        _download_config: Option<()>,
+    ) -> Result<ResolvedSources> {
+        match main_source {
+            DataSource::File(path) => {
+                // All local files - just return paths
+                Ok(ResolvedSources {
+                    main_data_path: path,
+                    taxonomy_path: taxonomy_source.and_then(|s| match s {
+                        DataSource::File(p) => Some(p),
+                        DataSource::Url(_) => None, // Handle mixed sources separately if needed
+                    }),
+                    other_names_path: other_names_source.and_then(|s| match s {
+                        DataSource::File(p) => Some(p),
+                        DataSource::Url(_) => None,
+                    }),
+                    practice_locations_path: practice_locations_source.and_then(|s| match s {
+                        DataSource::File(p) => Some(p),
+                        DataSource::Url(_) => None,
+                    }),
+                    endpoints_path: endpoints_source.and_then(|s| match s {
+                        DataSource::File(p) => Some(p),
+                        DataSource::Url(_) => None,
+                    }),
+                })
+            }
+            DataSource::Url(url) => {
+                #[cfg(feature = "download")]
+                {
+                    // Download and extract
+                    let config = download_config.unwrap_or_default();
+                    let mut downloader = NppesDownloader::with_config(config);
+                    
+                    let extracted = downloader.download_and_extract_zip(&url, None).await?;
+                    
+                    println!("{}", extracted.summary());
+                    
+                    if !extracted.has_main_data() {
+                        return Err(NppesError::Custom {
+                            message: "No main NPPES data file found in downloaded archive".to_string(),
+                            suggestion: Some("Check that the URL points to a valid NPPES data archive".to_string()),
+                        });
+                    }
+                    
+                    Ok(ResolvedSources {
+                        main_data_path: extracted.main_data_file.unwrap(),
+                        taxonomy_path: extracted.taxonomy_file,
+                        other_names_path: extracted.other_names_file,
+                        practice_locations_path: extracted.practice_locations_file,
+                        endpoints_path: extracted.endpoints_file,
+                    })
+                }
+                #[cfg(not(feature = "download"))]
+                {
+                    Err(NppesError::feature_required("download"))
+                }
+            }
+        }
     }
     
     /// Load a standard dataset from a directory containing all NPPES files
@@ -231,6 +527,37 @@ impl NppesDatasetBuilder {
         
         Ok(builder)
     }
+    
+    /// Download the latest NPPES data and build dataset
+    #[cfg(feature = "download")]
+    pub async fn download_latest() -> Result<NppesDataset> {
+        let mut downloader = NppesDownloader::new();
+        let extracted = downloader.download_latest_nppes().await?;
+        
+        if !extracted.has_main_data() {
+            return Err(NppesError::Custom {
+                message: "No main NPPES data file found in latest download".to_string(),
+                suggestion: Some("The CMS website structure may have changed".to_string()),
+            });
+        }
+        
+        NppesDatasetBuilder::new()
+            .main_data(extracted.main_data_file.as_ref().unwrap().as_path())
+            .taxonomy_reference(extracted.taxonomy_file.as_ref().unwrap().as_path())
+            .other_names(extracted.other_names_file.as_deref().unwrap_or(&PathBuf::new()))
+            .practice_locations(extracted.practice_locations_file.as_deref().unwrap_or(&PathBuf::new()))
+            .endpoints(extracted.endpoints_file.as_deref().unwrap_or(&PathBuf::new()))
+            .build()
+    }
+}
+
+/// Resolved file paths after downloading
+struct ResolvedSources {
+    main_data_path: PathBuf,
+    taxonomy_path: Option<PathBuf>,
+    other_names_path: Option<PathBuf>,
+    practice_locations_path: Option<PathBuf>,
+    endpoints_path: Option<PathBuf>,
 }
 
 /// Unified NPPES dataset containing all loaded data and indexes
@@ -321,7 +648,7 @@ impl NppesDataset {
             let mut state_index: HashMap<String, Vec<usize>> = HashMap::new();
             for (idx, provider) in self.providers.iter().enumerate() {
                 if let Some(state) = &provider.mailing_address.state {
-                    state_index.entry(state.clone())
+                    state_index.entry(state.as_code().to_string())
                         .or_default()
                         .push(idx);
                 }
@@ -353,7 +680,7 @@ impl NppesDataset {
                 npi_index.insert(provider.npi.clone(), idx);
                 
                 if let Some(state) = &provider.mailing_address.state {
-                    state_index.entry(state.clone())
+                    state_index.entry(state.as_code().to_string())
                         .or_default()
                         .push(idx);
                 }
@@ -382,19 +709,24 @@ impl NppesDataset {
     
     /// Get all providers in a state (fast if indexed)
     pub fn get_by_state(&self, state: &str) -> Vec<&NppesRecord> {
+        let state_enum = StateCode::from_code(state);
         if let Some(index) = &self.state_index {
-            index.get(state)
-                .map(|indices| {
-                    indices.iter()
-                        .filter_map(|&idx| self.providers.get(idx))
-                        .collect()
-                })
-                .unwrap_or_default()
+            if let Some(state_enum) = &state_enum {
+                index.get(state_enum.as_code())
+                    .map(|indices| {
+                        indices.iter()
+                            .filter_map(|&idx| self.providers.get(idx))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            }
         } else {
             self.providers.iter()
                 .filter(|p| {
                     p.mailing_address.state.as_ref()
-                        .map(|s| s.eq_ignore_ascii_case(state))
+                        .map(|s| Some(s) == state_enum.as_ref())
                         .unwrap_or(false)
                 })
                 .collect()
@@ -473,9 +805,10 @@ impl<'a> QueryBuilder<'a> {
     
     /// Filter by state
     pub fn state(mut self, state: &'a str) -> Self {
+        let state_enum = StateCode::from_code(state);
         self.filters.push(Box::new(move |p| {
             p.mailing_address.state.as_ref()
-                .map(|s| s.eq_ignore_ascii_case(state))
+                .map(|s| Some(s) == state_enum.as_ref())
                 .unwrap_or(false)
         }));
         self
@@ -483,9 +816,10 @@ impl<'a> QueryBuilder<'a> {
     
     /// Filter by multiple states
     pub fn state_in(mut self, states: &'a [&str]) -> Self {
+        let state_enums: Vec<_> = states.iter().filter_map(|s| StateCode::from_code(s)).collect();
         self.filters.push(Box::new(move |p| {
             p.mailing_address.state.as_ref()
-                .map(|s| states.iter().any(|state| s.eq_ignore_ascii_case(state)))
+                .map(|s| state_enums.iter().any(|se| se == s))
                 .unwrap_or(false)
         }));
         self
@@ -510,7 +844,8 @@ impl<'a> QueryBuilder<'a> {
     
     /// Filter by entity type
     pub fn entity_type(mut self, entity_type: EntityType) -> Self {
-        self.filters.push(Box::new(move |p| p.entity_type == entity_type));
+        let entity_type = entity_type.clone();
+        self.filters.push(Box::new(move |p| p.entity_type == Some(entity_type.clone())));
         self
     }
     
@@ -598,8 +933,9 @@ impl DatasetStatistics {
         
         for provider in &dataset.providers {
             match provider.entity_type {
-                EntityType::Individual => stats.individual_providers += 1,
-                EntityType::Organization => stats.organization_providers += 1,
+                Some(EntityType::Individual) => stats.individual_providers += 1,
+                Some(EntityType::Organization) => stats.organization_providers += 1,
+                None => {},
             }
             
             if provider.is_active() {

@@ -13,6 +13,7 @@ use serde_json;
 use crate::{Result, NppesError, ExportFormat};
 use crate::data_types::*;
 use crate::dataset::NppesDataset;
+use crate::reader::NppesReader;
 
 #[cfg(feature = "arrow-export")]
 use arrow::array::*;
@@ -23,9 +24,11 @@ use arrow::record_batch::RecordBatch;
 #[cfg(feature = "arrow-export")]
 use parquet::arrow::ArrowWriter;
 #[cfg(feature = "arrow-export")]
-use parquet::arrow::arrow_reader::ParquetFileArrowReader;
-#[cfg(feature = "arrow-export")]
 use std::sync::Arc;
+#[cfg(feature = "arrow-export")]
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+#[cfg(feature = "arrow-export")]
+use arrow::array::ArrayRef;
 
 /// Trait for implementing NPPES data exporters
 pub trait NppesExporter {
@@ -185,9 +188,9 @@ impl CsvExporter {
         for provider in &dataset.providers {
             providers_writer.write_record(&[
                 provider.npi.as_str(),
-                provider.entity_type.to_code(),
+                provider.entity_type.as_ref().map_or("", |e| e.to_code()),
                 &provider.display_name(),
-                provider.mailing_address.state.as_deref().unwrap_or(""),
+                &provider.mailing_address.state.as_ref().map(|s| s.as_code().to_string()).unwrap_or("".to_string()),
                 provider.mailing_address.postal_code.as_deref().unwrap_or(""),
             ])?;
         }
@@ -352,36 +355,42 @@ impl SqlExporter {
                 self.table_prefix)?;
             
             for (i, provider) in chunk.iter().enumerate() {
+                let state_code_opt: Option<String> = provider.mailing_address.state.as_ref().map(|s| s.as_code().to_string());
                 let values = match provider.entity_type {
-                    EntityType::Organization => {
+                    Some(EntityType::Organization) => {
                         format!("('{}', {}, {}, NULL, NULL, NULL, {}, {}, {}, {}, {}, {}, {})",
                             provider.npi.as_str(),
-                            provider.entity_type.to_code(),
+                            provider.entity_type.as_ref().map_or("NULL", |e| e.to_code()),
                             sql_string(&provider.organization_name.legal_business_name),
                             sql_string(&provider.mailing_address.line_1),
                             sql_string(&provider.mailing_address.city),
-                            sql_string(&provider.mailing_address.state),
+                            sql_string(&state_code_opt),
                             sql_string(&provider.mailing_address.postal_code),
                             sql_date(&provider.enumeration_date),
                             sql_date(&provider.last_update_date),
                             provider.is_active()
                         )
                     }
-                    EntityType::Individual => {
+                    Some(EntityType::Individual) => {
+                        let state_code_opt: Option<String> = provider.mailing_address.state.as_ref().map(|s| s.as_code().to_string());
                         format!("('{}', {}, NULL, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
                             provider.npi.as_str(),
-                            provider.entity_type.to_code(),
+                            provider.entity_type.as_ref().map_or("NULL", |e| e.to_code()),
                             sql_string(&provider.provider_name.last),
                             sql_string(&provider.provider_name.first),
                             sql_string(&provider.provider_name.middle),
                             sql_string(&provider.mailing_address.line_1),
                             sql_string(&provider.mailing_address.city),
-                            sql_string(&provider.mailing_address.state),
+                            sql_string(&state_code_opt),
                             sql_string(&provider.mailing_address.postal_code),
                             sql_date(&provider.enumeration_date),
                             sql_date(&provider.last_update_date),
                             provider.is_active()
                         )
+                    }
+                    None => {
+                        // Fallback for missing entity_type
+                        format!("('{}', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)", provider.npi.as_str())
                     }
                 };
                 
@@ -524,98 +533,138 @@ impl NppesExporter for ParquetExporter {
         ]));
         // 2. Build Arrow arrays for each field
         let n = dataset.providers.len();
-        macro_rules! col {
-            ($getter:expr) => { (0..n).map($getter).collect::<StringArray>() };
-        }
-        macro_rules! col_opt {
-            ($getter:expr) => { (0..n).map($getter).map(|v| v.as_deref().unwrap_or("")).collect::<StringArray>() };
-        }
-        macro_rules! col_date {
-            ($getter:expr) => { (0..n).map($getter).map(|v| v.map(|d| d.to_string()).unwrap_or(String::new())).collect::<StringArray>() };
-        }
-        macro_rules! col_bool {
-            ($getter:expr) => { (0..n).map($getter).collect::<BooleanArray>() };
-        }
         let providers = &dataset.providers;
-        let taxonomy_codes_json: StringArray = (0..n).map(|i| serde_json::to_string(&providers[i].taxonomy_codes).unwrap_or_default()).collect();
-        let other_identifiers_json: StringArray = (0..n).map(|i| serde_json::to_string(&providers[i].other_identifiers).unwrap_or_default()).collect();
-        let is_sole_proprietor: BooleanArray = (0..n).map(|i| providers[i].is_sole_proprietor.unwrap_or(false)).collect();
-        let is_organization_subpart: BooleanArray = (0..n).map(|i| providers[i].is_organization_subpart.unwrap_or(false)).collect();
+        let taxonomy_codes_json: StringArray = StringArray::from((0..n).map(|i| serde_json::to_string(&providers[i].taxonomy_codes).ok()).collect::<Vec<Option<String>>>());
+        let other_identifiers_json: StringArray = StringArray::from((0..n).map(|i| serde_json::to_string(&providers[i].other_identifiers).ok()).collect::<Vec<Option<String>>>());
+        let is_sole_proprietor: BooleanArray = (0..n).map(|i| providers[i].sole_proprietor.as_ref().map(|v| *v == crate::data_types::SoleProprietorCode::Yes)).collect();
+        let is_organization_subpart: BooleanArray = (0..n).map(|i| providers[i].organization_subpart.as_ref().map(|v| *v == crate::data_types::SubpartCode::Yes)).collect();
+        let npi: ArrayRef = Arc::new(StringArray::from((0..n).map(|i| Some(providers[i].npi.as_str())).collect::<Vec<Option<&str>>>())) as ArrayRef;
+        let entity_type = StringArray::from((0..n).map(|i| providers[i].entity_type.as_ref().map(|e| e.to_code())).collect::<Vec<Option<&str>>>());
+        let replacement_npi = StringArray::from((0..n).map(|i| providers[i].replacement_npi.as_ref().map(|n| n.as_str())).collect::<Vec<Option<&str>>>());
+        let ein = StringArray::from((0..n).map(|i| providers[i].ein.as_deref()).collect::<Vec<Option<&str>>>());
+        // ProviderName
+        let provider_name_prefix = StringArray::from((0..n).map(|i| providers[i].provider_name.prefix.as_ref().map(|s| s.as_code())).collect::<Vec<Option<&str>>>());
+        let provider_name_first = StringArray::from((0..n).map(|i| providers[i].provider_name.first.as_deref()).collect::<Vec<Option<&str>>>());
+        let provider_name_middle = StringArray::from((0..n).map(|i| providers[i].provider_name.middle.as_deref()).collect::<Vec<Option<&str>>>());
+        let provider_name_last = StringArray::from((0..n).map(|i| providers[i].provider_name.last.as_deref()).collect::<Vec<Option<&str>>>());
+        let provider_name_suffix = StringArray::from((0..n).map(|i| providers[i].provider_name.suffix.as_ref().map(|s| s.as_code())).collect::<Vec<Option<&str>>>());
+        let provider_name_credential = StringArray::from((0..n).map(|i| providers[i].provider_name.credential.as_deref()).collect::<Vec<Option<&str>>>());
+        // ProviderOtherName
+        let provider_other_name_prefix = StringArray::from((0..n).map(|i| providers[i].provider_other_name.prefix.as_ref().map(|s| s.as_code())).collect::<Vec<Option<&str>>>());
+        let provider_other_name_first = StringArray::from((0..n).map(|i| providers[i].provider_other_name.first.as_deref()).collect::<Vec<Option<&str>>>());
+        let provider_other_name_middle = StringArray::from((0..n).map(|i| providers[i].provider_other_name.middle.as_deref()).collect::<Vec<Option<&str>>>());
+        let provider_other_name_last = StringArray::from((0..n).map(|i| providers[i].provider_other_name.last.as_deref()).collect::<Vec<Option<&str>>>());
+        let provider_other_name_suffix = StringArray::from((0..n).map(|i| providers[i].provider_other_name.suffix.as_ref().map(|s| s.as_code())).collect::<Vec<Option<&str>>>());
+        let provider_other_name_credential = StringArray::from((0..n).map(|i| providers[i].provider_other_name.credential.as_deref()).collect::<Vec<Option<&str>>>());
+        let provider_other_name_type_code = StringArray::from((0..n).map(|i| providers[i].provider_other_name_type.as_ref().map(|t| t.as_code())).collect::<Vec<Option<&str>>>());
+        // OrganizationName
+        let organization_legal_business_name = StringArray::from((0..n).map(|i| providers[i].organization_name.legal_business_name.as_deref()).collect::<Vec<Option<&str>>>());
+        let organization_other_name = StringArray::from((0..n).map(|i| providers[i].organization_name.other_name.as_deref()).collect::<Vec<Option<&str>>>());
+        let organization_other_name_type_code = StringArray::from((0..n).map(|i| providers[i].organization_name.other_name_type.as_ref().map(|t| t.as_code())).collect::<Vec<Option<&str>>>());
+        // Mailing Address
+        let mailing_line_1 = StringArray::from((0..n).map(|i| providers[i].mailing_address.line_1.as_deref()).collect::<Vec<Option<&str>>>());
+        let mailing_line_2 = StringArray::from((0..n).map(|i| providers[i].mailing_address.line_2.as_deref()).collect::<Vec<Option<&str>>>());
+        let mailing_city = StringArray::from((0..n).map(|i| providers[i].mailing_address.city.as_deref()).collect::<Vec<Option<&str>>>());
+        let mailing_state = StringArray::from((0..n).map(|i| providers[i].mailing_address.state.as_ref().map(|s| s.as_code())).collect::<Vec<Option<&str>>>());
+        let mailing_postal_code = StringArray::from((0..n).map(|i| providers[i].mailing_address.postal_code.as_deref()).collect::<Vec<Option<&str>>>());
+        let mailing_country_code = StringArray::from((0..n).map(|i| providers[i].mailing_address.country.as_ref().map(|c| c.as_code())).collect::<Vec<Option<&str>>>());
+        let mailing_telephone = StringArray::from((0..n).map(|i| providers[i].mailing_address.telephone.as_deref()).collect::<Vec<Option<&str>>>());
+        let mailing_fax = StringArray::from((0..n).map(|i| providers[i].mailing_address.fax.as_deref()).collect::<Vec<Option<&str>>>());
+        // Practice Address
+        let practice_line_1 = StringArray::from((0..n).map(|i| providers[i].practice_address.line_1.as_deref()).collect::<Vec<Option<&str>>>());
+        let practice_line_2 = StringArray::from((0..n).map(|i| providers[i].practice_address.line_2.as_deref()).collect::<Vec<Option<&str>>>());
+        let practice_city = StringArray::from((0..n).map(|i| providers[i].practice_address.city.as_deref()).collect::<Vec<Option<&str>>>());
+        let practice_state = StringArray::from((0..n).map(|i| providers[i].practice_address.state.as_ref().map(|s| s.as_code())).collect::<Vec<Option<&str>>>());
+        let practice_postal_code = StringArray::from((0..n).map(|i| providers[i].practice_address.postal_code.as_deref()).collect::<Vec<Option<&str>>>());
+        let practice_country_code = StringArray::from((0..n).map(|i| providers[i].practice_address.country.as_ref().map(|c| c.as_code())).collect::<Vec<Option<&str>>>());
+        let practice_telephone = StringArray::from((0..n).map(|i| providers[i].practice_address.telephone.as_deref()).collect::<Vec<Option<&str>>>());
+        let practice_fax = StringArray::from((0..n).map(|i| providers[i].practice_address.fax.as_deref()).collect::<Vec<Option<&str>>>());
+        // Dates
+        let enumeration_date = StringArray::from((0..n).map(|i| providers[i].enumeration_date.map(|d| d.to_string())).collect::<Vec<Option<String>>>());
+        let last_update_date = StringArray::from((0..n).map(|i| providers[i].last_update_date.map(|d| d.to_string())).collect::<Vec<Option<String>>>());
+        let deactivation_date = StringArray::from((0..n).map(|i| providers[i].deactivation_date.map(|d| d.to_string())).collect::<Vec<Option<String>>>());
+        let reactivation_date = StringArray::from((0..n).map(|i| providers[i].reactivation_date.map(|d| d.to_string())).collect::<Vec<Option<String>>>());
+        let certification_date = StringArray::from((0..n).map(|i| providers[i].certification_date.map(|d| d.to_string())).collect::<Vec<Option<String>>>());
+        // Status
+        let deactivation_reason_code = StringArray::from((0..n).map(|i| providers[i].deactivation_reason.as_ref().map(|d| d.as_code())).collect::<Vec<Option<&str>>>());
+        let provider_gender_code = StringArray::from((0..n).map(|i| providers[i].provider_gender.as_ref().map(|g| g.as_code())).collect::<Vec<Option<&str>>>());
+        // Authorized Official
+        let auth_official_name_prefix = StringArray::from((0..n).map(|i| providers[i].authorized_official.as_ref().and_then(|a| a.prefix.as_ref().map(|s| s.as_code()))).collect::<Vec<Option<&str>>>());
+        let auth_official_first_name = StringArray::from((0..n).map(|i| providers[i].authorized_official.as_ref().and_then(|a| a.first_name.as_deref())).collect::<Vec<Option<&str>>>());
+        let auth_official_middle_name = StringArray::from((0..n).map(|i| providers[i].authorized_official.as_ref().and_then(|a| a.middle_name.as_deref())).collect::<Vec<Option<&str>>>());
+        let auth_official_last_name = StringArray::from((0..n).map(|i| providers[i].authorized_official.as_ref().and_then(|a| a.last_name.as_deref())).collect::<Vec<Option<&str>>>());
+        let auth_official_name_suffix = StringArray::from((0..n).map(|i| providers[i].authorized_official.as_ref().and_then(|a| a.suffix.as_ref().map(|s| s.as_code()))).collect::<Vec<Option<&str>>>());
+        let auth_official_credential = StringArray::from((0..n).map(|i| providers[i].authorized_official.as_ref().and_then(|a| a.credential.as_deref())).collect::<Vec<Option<&str>>>());
+        let auth_official_title = StringArray::from((0..n).map(|i| providers[i].authorized_official.as_ref().and_then(|a| a.title.as_deref())).collect::<Vec<Option<&str>>>());
+        let auth_official_telephone = StringArray::from((0..n).map(|i| providers[i].authorized_official.as_ref().and_then(|a| a.telephone.as_deref())).collect::<Vec<Option<&str>>>());
+        let parent_organization_lbn = StringArray::from((0..n).map(|i| providers[i].parent_organization_lbn.as_deref()).collect::<Vec<Option<&str>>>());
+        let parent_organization_tin: ArrayRef = Arc::new(StringArray::from((0..n).map(|i| providers[i].parent_organization_tin.as_deref()).collect::<Vec<Option<&str>>>())) as ArrayRef;
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(col!(|i| providers[i].npi.as_str())),
-                Arc::new(col!(|i| providers[i].entity_type.to_code())),
-                Arc::new(col_opt!(|i| providers[i].replacement_npi.as_ref().map(|n| n.as_str().to_string()))),
-                Arc::new(col_opt!(|i| providers[i].ein.as_ref().map(|s| s.clone()))),
-                // ProviderName
-                Arc::new(col_opt!(|i| providers[i].provider_name.prefix.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].provider_name.first.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].provider_name.middle.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].provider_name.last.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].provider_name.suffix.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].provider_name.credential.as_ref().map(|s| s.clone()))),
-                // ProviderOtherName
-                Arc::new(col_opt!(|i| providers[i].provider_other_name.prefix.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].provider_other_name.first.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].provider_other_name.middle.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].provider_other_name.last.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].provider_other_name.suffix.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].provider_other_name.credential.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].provider_other_name_type_code.as_ref().map(|s| s.clone()))),
-                // OrganizationName
-                Arc::new(col_opt!(|i| providers[i].organization_name.legal_business_name.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].organization_name.other_name.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].organization_name.other_name_type_code.as_ref().map(|s| s.clone()))),
-                // Mailing Address
-                Arc::new(col_opt!(|i| providers[i].mailing_address.line_1.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].mailing_address.line_2.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].mailing_address.city.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].mailing_address.state.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].mailing_address.postal_code.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].mailing_address.country_code.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].mailing_address.telephone.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].mailing_address.fax.as_ref().map(|s| s.clone()))),
-                // Practice Address
-                Arc::new(col_opt!(|i| providers[i].practice_address.line_1.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].practice_address.line_2.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].practice_address.city.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].practice_address.state.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].practice_address.postal_code.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].practice_address.country_code.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].practice_address.telephone.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].practice_address.fax.as_ref().map(|s| s.clone()))),
-                // Dates
-                Arc::new(col_date!(|i| providers[i].enumeration_date)),
-                Arc::new(col_date!(|i| providers[i].last_update_date)),
-                Arc::new(col_date!(|i| providers[i].deactivation_date)),
-                Arc::new(col_date!(|i| providers[i].reactivation_date)),
-                Arc::new(col_date!(|i| providers[i].certification_date)),
-                // Status
-                Arc::new(col_opt!(|i| providers[i].deactivation_reason_code.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].provider_gender_code.as_ref().map(|s| s.clone()))),
-                // Authorized Official
-                Arc::new(col_opt!(|i| providers[i].authorized_official.as_ref().and_then(|a| a.name_prefix.clone()))),
-                Arc::new(col_opt!(|i| providers[i].authorized_official.as_ref().and_then(|a| a.first_name.clone()))),
-                Arc::new(col_opt!(|i| providers[i].authorized_official.as_ref().and_then(|a| a.middle_name.clone()))),
-                Arc::new(col_opt!(|i| providers[i].authorized_official.as_ref().and_then(|a| a.last_name.clone()))),
-                Arc::new(col_opt!(|i| providers[i].authorized_official.as_ref().and_then(|a| a.name_suffix.clone()))),
-                Arc::new(col_opt!(|i| providers[i].authorized_official.as_ref().and_then(|a| a.credential.clone()))),
-                Arc::new(col_opt!(|i| providers[i].authorized_official.as_ref().and_then(|a| a.title.clone()))),
-                Arc::new(col_opt!(|i| providers[i].authorized_official.as_ref().and_then(|a| a.telephone.clone()))),
-                // Taxonomy codes and other identifiers as JSON
+                npi,
+                Arc::new(entity_type),
+                Arc::new(replacement_npi),
+                Arc::new(ein),
+                Arc::new(provider_name_prefix),
+                Arc::new(provider_name_first),
+                Arc::new(provider_name_middle),
+                Arc::new(provider_name_last),
+                Arc::new(provider_name_suffix),
+                Arc::new(provider_name_credential),
+                Arc::new(provider_other_name_prefix),
+                Arc::new(provider_other_name_first),
+                Arc::new(provider_other_name_middle),
+                Arc::new(provider_other_name_last),
+                Arc::new(provider_other_name_suffix),
+                Arc::new(provider_other_name_credential),
+                Arc::new(provider_other_name_type_code),
+                Arc::new(organization_legal_business_name),
+                Arc::new(organization_other_name),
+                Arc::new(organization_other_name_type_code),
+                Arc::new(mailing_line_1),
+                Arc::new(mailing_line_2),
+                Arc::new(mailing_city),
+                Arc::new(mailing_state),
+                Arc::new(mailing_postal_code),
+                Arc::new(mailing_country_code),
+                Arc::new(mailing_telephone),
+                Arc::new(mailing_fax),
+                Arc::new(practice_line_1),
+                Arc::new(practice_line_2),
+                Arc::new(practice_city),
+                Arc::new(practice_state),
+                Arc::new(practice_postal_code),
+                Arc::new(practice_country_code),
+                Arc::new(practice_telephone),
+                Arc::new(practice_fax),
+                Arc::new(enumeration_date),
+                Arc::new(last_update_date),
+                Arc::new(deactivation_date),
+                Arc::new(reactivation_date),
+                Arc::new(certification_date),
+                Arc::new(deactivation_reason_code),
+                Arc::new(provider_gender_code),
+                Arc::new(auth_official_name_prefix),
+                Arc::new(auth_official_first_name),
+                Arc::new(auth_official_middle_name),
+                Arc::new(auth_official_last_name),
+                Arc::new(auth_official_name_suffix),
+                Arc::new(auth_official_credential),
+                Arc::new(auth_official_title),
+                Arc::new(auth_official_telephone),
                 Arc::new(taxonomy_codes_json),
                 Arc::new(other_identifiers_json),
-                // Organization flags
                 Arc::new(is_sole_proprietor),
                 Arc::new(is_organization_subpart),
-                Arc::new(col_opt!(|i| providers[i].parent_organization_lbn.as_ref().map(|s| s.clone()))),
-                Arc::new(col_opt!(|i| providers[i].parent_organization_tin.as_ref().map(|s| s.clone()))),
+                Arc::new(parent_organization_lbn),
+                Arc::new(parent_organization_tin),
             ],
         )?;
         // 3. Write to Parquet
         let file = File::create(path)?;
-        let mut writer = ArrowWriter::try_new(BufWriter::new(file), schema, Some(self.compression))?;
+        let props = parquet::file::properties::WriterProperties::builder().set_compression(self.compression).build();
+        let mut writer = ArrowWriter::try_new(BufWriter::new(file), schema, Some(props))?;
         writer.write(&batch)?;
         writer.close()?;
         Ok(())
@@ -708,17 +757,25 @@ impl NppesDataset {
             Field::new("display_name", DataType::Utf8, true),
             Field::new("section", DataType::Utf8, true),
         ]));
+        let code = Arc::new(StringArray::from((0..n).map(|i| Some(taxonomies[i].code.as_str())).collect::<Vec<Option<&str>>>())) as _;
+        let grouping = Arc::new(StringArray::from((0..n).map(|i| taxonomies[i].grouping.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let classification = Arc::new(StringArray::from((0..n).map(|i| taxonomies[i].classification.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let specialization = Arc::new(StringArray::from((0..n).map(|i| taxonomies[i].specialization.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let definition = Arc::new(StringArray::from((0..n).map(|i| taxonomies[i].definition.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let notes = Arc::new(StringArray::from((0..n).map(|i| taxonomies[i].notes.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let display_name = Arc::new(StringArray::from((0..n).map(|i| taxonomies[i].display_name.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let section = Arc::new(StringArray::from((0..n).map(|i| taxonomies[i].section.as_deref()).collect::<Vec<Option<&str>>>())) as _;
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new((0..n).map(|i| taxonomies[i].code.as_str()).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| taxonomies[i].grouping.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| taxonomies[i].classification.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| taxonomies[i].specialization.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| taxonomies[i].definition.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| taxonomies[i].notes.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| taxonomies[i].display_name.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| taxonomies[i].section.as_deref().unwrap_or("")).collect::<StringArray>()),
+                code,
+                grouping,
+                classification,
+                specialization,
+                definition,
+                notes,
+                display_name,
+                section,
             ],
         )?;
         let file = File::create(path)?;
@@ -740,12 +797,15 @@ impl NppesDataset {
             Field::new("provider_other_organization_name", DataType::Utf8, false),
             Field::new("provider_other_organization_name_type_code", DataType::Utf8, true),
         ]));
+        let npi = Arc::new(StringArray::from((0..n).map(|i| Some(other_names[i].npi.as_str())).collect::<Vec<Option<&str>>>())) as _;
+        let org_name = Arc::new(StringArray::from((0..n).map(|i| Some(other_names[i].provider_other_organization_name.as_str())).collect::<Vec<Option<&str>>>())) as _;
+        let provider_other_organization_name_type_code = Arc::new(StringArray::from((0..n).map(|i| other_names[i].provider_other_organization_name_type_code.as_deref()).collect::<Vec<Option<&str>>>())) as _;
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new((0..n).map(|i| other_names[i].npi.as_str()).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| other_names[i].provider_other_organization_name.as_str()).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| other_names[i].provider_other_organization_name_type_code.as_deref().unwrap_or("")).collect::<StringArray>()),
+                npi,
+                org_name,
+                provider_other_organization_name_type_code,
             ],
         )?;
         let file = File::create(path)?;
@@ -767,12 +827,17 @@ impl NppesDataset {
             Field::new("address_json", DataType::Utf8, false),
             Field::new("telephone_extension", DataType::Utf8, true),
         ]));
+        let address_json_vec: Vec<Option<String>> = (0..n).map(|i| Some(address_to_json(&Some(locations[i].address.clone())))).collect();
+        let address_json_refs: Vec<Option<&str>> = address_json_vec.iter().map(|opt| opt.as_deref()).collect();
+        let address_json = Arc::new(StringArray::from(address_json_refs)) as _;
+        let telephone_extension = Arc::new(StringArray::from((0..n).map(|i| locations[i].telephone_extension.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let npi: ArrayRef = Arc::new(StringArray::from((0..n).map(|i| Some(locations[i].npi.as_str())).collect::<Vec<Option<&str>>>())) as ArrayRef;
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new((0..n).map(|i| locations[i].npi.as_str()).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| address_to_json(&Some(locations[i].address.clone()))).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| locations[i].telephone_extension.as_deref().unwrap_or("")).collect::<StringArray>()),
+                npi,
+                address_json,
+                telephone_extension,
             ],
         )?;
         let file = File::create(path)?;
@@ -805,23 +870,39 @@ impl NppesDataset {
             Field::new("other_content_description", DataType::Utf8, true),
             Field::new("affiliation_address_json", DataType::Utf8, true),
         ]));
+        let npi = Arc::new(StringArray::from((0..n).map(|i| Some(endpoints[i].npi.as_str())).collect::<Vec<Option<&str>>>())) as _;
+        let endpoint_type = Arc::new(StringArray::from((0..n).map(|i| endpoints[i].endpoint_type.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let endpoint_type_description = Arc::new(StringArray::from((0..n).map(|i| endpoints[i].endpoint_type_description.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let endpoint = Arc::new(StringArray::from((0..n).map(|i| endpoints[i].endpoint.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let affiliation = Arc::new(BooleanArray::from((0..n).map(|i| endpoints[i].affiliation.unwrap_or(false)).collect::<Vec<bool>>())) as Arc<BooleanArray>;
+        let endpoint_description = Arc::new(StringArray::from((0..n).map(|i| endpoints[i].endpoint_description.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let affiliation_legal_business_name = Arc::new(StringArray::from((0..n).map(|i| endpoints[i].affiliation_legal_business_name.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let use_code = Arc::new(StringArray::from((0..n).map(|i| endpoints[i].use_code.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let use_description = Arc::new(StringArray::from((0..n).map(|i| endpoints[i].use_description.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let other_use_description = Arc::new(StringArray::from((0..n).map(|i| endpoints[i].other_use_description.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let content_type = Arc::new(StringArray::from((0..n).map(|i| endpoints[i].content_type.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let content_description = Arc::new(StringArray::from((0..n).map(|i| endpoints[i].content_description.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let other_content_description = Arc::new(StringArray::from((0..n).map(|i| endpoints[i].other_content_description.as_deref()).collect::<Vec<Option<&str>>>())) as _;
+        let affiliation_address_vec: Vec<Option<String>> = (0..n).map(|i| Some(address_to_json(&endpoints[i].affiliation_address))).collect();
+        let affiliation_address_refs: Vec<Option<&str>> = affiliation_address_vec.iter().map(|opt| opt.as_deref()).collect();
+        let affiliation_address = Arc::new(StringArray::from(affiliation_address_refs)) as _;
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new((0..n).map(|i| endpoints[i].npi.as_str()).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| endpoints[i].endpoint_type.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| endpoints[i].endpoint_type_description.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| endpoints[i].endpoint.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| endpoints[i].affiliation.unwrap_or(false)).collect::<BooleanArray>()),
-                Arc::new((0..n).map(|i| endpoints[i].endpoint_description.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| endpoints[i].affiliation_legal_business_name.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| endpoints[i].use_code.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| endpoints[i].use_description.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| endpoints[i].other_use_description.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| endpoints[i].content_type.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| endpoints[i].content_description.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| endpoints[i].other_content_description.as_deref().unwrap_or("")).collect::<StringArray>()),
-                Arc::new((0..n).map(|i| address_to_json(&endpoints[i].affiliation_address)).collect::<StringArray>()),
+                npi,
+                endpoint_type,
+                endpoint_type_description,
+                endpoint,
+                affiliation,
+                endpoint_description,
+                affiliation_legal_business_name,
+                use_code,
+                use_description,
+                other_use_description,
+                content_type,
+                content_description,
+                other_content_description,
+                affiliation_address,
             ],
         )?;
         let file = File::create(path)?;
@@ -847,12 +928,8 @@ impl NppesReader {
     #[cfg(feature = "arrow-export")]
     pub fn load_taxonomy_data_parquet<P: AsRef<Path>>(&self, path: P) -> Result<Vec<TaxonomyReference>> {
         use std::fs::File;
-        use std::sync::Arc;
-        use parquet::file::reader::{FileReader, SerializedFileReader};
         let file = File::open(path)?;
-        let file_reader = Arc::new(SerializedFileReader::new(file)?);
-        let mut arrow_reader = ParquetFileArrowReader::new(file_reader);
-        let record_batch_reader = arrow_reader.get_record_reader(1024)?;
+        let mut record_batch_reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
         let mut records = Vec::new();
         for batch in record_batch_reader {
             let batch = batch?;
@@ -876,12 +953,8 @@ impl NppesReader {
     #[cfg(feature = "arrow-export")]
     pub fn load_other_name_data_parquet<P: AsRef<Path>>(&self, path: P) -> Result<Vec<OtherNameRecord>> {
         use std::fs::File;
-        use std::sync::Arc;
-        use parquet::file::reader::{FileReader, SerializedFileReader};
         let file = File::open(path)?;
-        let file_reader = Arc::new(SerializedFileReader::new(file)?);
-        let mut arrow_reader = ParquetFileArrowReader::new(file_reader);
-        let record_batch_reader = arrow_reader.get_record_reader(1024)?;
+        let mut record_batch_reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
         let mut records = Vec::new();
         for batch in record_batch_reader {
             let batch = batch?;
@@ -900,12 +973,8 @@ impl NppesReader {
     #[cfg(feature = "arrow-export")]
     pub fn load_practice_location_data_parquet<P: AsRef<Path>>(&self, path: P) -> Result<Vec<PracticeLocationRecord>> {
         use std::fs::File;
-        use std::sync::Arc;
-        use parquet::file::reader::{FileReader, SerializedFileReader};
         let file = File::open(path)?;
-        let file_reader = Arc::new(SerializedFileReader::new(file)?);
-        let mut arrow_reader = ParquetFileArrowReader::new(file_reader);
-        let record_batch_reader = arrow_reader.get_record_reader(1024)?;
+        let mut record_batch_reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
         let mut records = Vec::new();
         for batch in record_batch_reader {
             let batch = batch?;
@@ -924,12 +993,8 @@ impl NppesReader {
     #[cfg(feature = "arrow-export")]
     pub fn load_endpoint_data_parquet<P: AsRef<Path>>(&self, path: P) -> Result<Vec<EndpointRecord>> {
         use std::fs::File;
-        use std::sync::Arc;
-        use parquet::file::reader::{FileReader, SerializedFileReader};
         let file = File::open(path)?;
-        let file_reader = Arc::new(SerializedFileReader::new(file)?);
-        let mut arrow_reader = ParquetFileArrowReader::new(file_reader);
-        let record_batch_reader = arrow_reader.get_record_reader(1024)?;
+        let mut record_batch_reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
         let mut records = Vec::new();
         for batch in record_batch_reader {
             let batch = batch?;

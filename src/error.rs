@@ -9,6 +9,16 @@ use std::path::PathBuf;
 use thiserror::Error;
 use serde::{Serialize, Deserialize};
 
+#[cfg(feature = "arrow-export")]
+use arrow;
+#[cfg(feature = "arrow-export")]
+use parquet;
+
+#[cfg(feature = "arrow-export")]
+use arrow::error::ArrowError;
+#[cfg(feature = "arrow-export")]
+use parquet::errors::ParquetError;
+
 /// NPPES library result type
 pub type Result<T> = std::result::Result<T, NppesError>;
 
@@ -352,6 +362,28 @@ impl From<serde_json::Error> for NppesError {
             message: err.to_string(),
             format: ExportFormat::Json,
             suggestion: Some("Check if the data is serializable to JSON.".to_string()),
+        }
+    }
+}
+
+#[cfg(feature = "arrow-export")]
+impl From<ArrowError> for NppesError {
+    fn from(err: ArrowError) -> Self {
+        NppesError::Export {
+            message: err.to_string(),
+            format: ExportFormat::Arrow,
+            suggestion: Some("Check Arrow schema and data consistency.".to_string()),
+        }
+    }
+}
+
+#[cfg(feature = "arrow-export")]
+impl From<ParquetError> for NppesError {
+    fn from(err: ParquetError) -> Self {
+        NppesError::Export {
+            message: err.to_string(),
+            format: ExportFormat::Parquet,
+            suggestion: Some("Check Parquet file and schema consistency.".to_string()),
         }
     }
 }

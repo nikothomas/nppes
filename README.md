@@ -40,6 +40,8 @@ Add this to your `Cargo.toml`:
 nppes = "0.1.0"
 ```
 
+The CLI binary is called `npcli`.
+
 ## Usage
 
 ### Basic Usage
@@ -55,6 +57,34 @@ println!("Loaded {} providers", providers.len());
 
 // Load taxonomy reference data
 let taxonomy_data = reader.load_taxonomy_data("data/nucc_taxonomy_250.csv")?;
+```
+
+### Command Line Interface (CLI)
+
+You can use the CLI tool `npcli` to download, query, and export NPPES data.
+
+#### Example: Download the latest NPPES data
+
+```sh
+npcli download --out-dir ./data
+```
+
+#### Example: Show statistics for a dataset
+
+```sh
+npcli stats --data-dir ./data
+```
+
+#### Example: Query providers by state and specialty
+
+```sh
+npcli query --data-dir ./data --state CA --specialty Cardiology
+```
+
+#### Example: Export data to JSON
+
+```sh
+npcli export --data-dir ./data --output ca_cardiologists.json --format json --state CA --specialty Cardiology
 ```
 
 ### Analytics and Querying

@@ -15,11 +15,11 @@ fn get_dataset() -> &'static NppesDataset {
         
         // Build dataset from actual files
         let dataset = NppesDatasetBuilder::new()
-            .main_data("data/npidata_pfile_20050523-20250111.csv")
+            .main_data("data/npidata_pfile_20050523-20250511.csv")
             .taxonomy_reference("data/nucc_taxonomy_250.csv")
             .build_indexes(true)
             .skip_invalid_records(true)
-            .show_progress(true)
+            .show_progress(false)  // Disable progress bars for benchmarks
             .build()
             .expect("Failed to load NPPES dataset");
         
@@ -81,11 +81,10 @@ fn benchmark_queries(c: &mut Criterion) {
     
     // Get some real NPIs for lookup benchmarks
     let sample_npis: Vec<Npi> = dataset.providers.iter()
-        .filter(|p| p.mailing_address.state.as_deref() == Some("CA"))
+        .filter(|p| p.mailing_address.state.as_ref() == Some(&StateCode::CA))
         .take(10)
         .map(|p| p.npi.clone())
         .collect();
-    
     // Benchmark NPI lookup with real data
     group.bench_function("npi_lookup_indexed_real", |b| {
         let npi = &sample_npis[0];
@@ -236,12 +235,12 @@ fn benchmark_data_types(c: &mut Criterion) {
     
     // Get some real records for benchmarking
     let individual_records: Vec<&NppesRecord> = dataset.providers.iter()
-        .filter(|p| p.entity_type == EntityType::Individual)
+        .filter(|p| p.entity_type == Some(EntityType::Individual))
         .take(10)
         .collect();
     
     let organization_records: Vec<&NppesRecord> = dataset.providers.iter()
-        .filter(|p| p.entity_type == EntityType::Organization)
+        .filter(|p| p.entity_type == Some(EntityType::Organization))
         .take(10)
         .collect();
     

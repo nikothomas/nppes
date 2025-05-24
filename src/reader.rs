@@ -292,15 +292,33 @@ impl NppesReader {
         }
         
         let elapsed = start_time.elapsed();
-        println!(
-            "Successfully loaded {} NPPES provider records in {:.2}s ({:.0} records/sec)",
-            records.len(),
-            elapsed.as_secs_f64(),
-            records.len() as f64 / elapsed.as_secs_f64()
-        );
         
-        if invalid_count > 0 {
-            println!("Skipped {} invalid records", invalid_count);
+        #[cfg(feature = "progress")]
+        if self.show_progress_bar {
+            println!(
+                "Successfully loaded {} NPPES provider records in {:.2}s ({:.0} records/sec)",
+                records.len(),
+                elapsed.as_secs_f64(),
+                records.len() as f64 / elapsed.as_secs_f64()
+            );
+            
+            if invalid_count > 0 {
+                println!("Skipped {} invalid records", invalid_count);
+            }
+        }
+        
+        #[cfg(not(feature = "progress"))]
+        {
+            println!(
+                "Successfully loaded {} NPPES provider records in {:.2}s ({:.0} records/sec)",
+                records.len(),
+                elapsed.as_secs_f64(),
+                records.len() as f64 / elapsed.as_secs_f64()
+            );
+            
+            if invalid_count > 0 {
+                println!("Skipped {} invalid records", invalid_count);
+            }
         }
         
         Ok(records)
@@ -345,6 +363,17 @@ impl NppesReader {
         }
         
         let elapsed = start_time.elapsed();
+        
+        #[cfg(feature = "progress")]
+        if self.show_progress_bar {
+            println!(
+                "Successfully loaded {} taxonomy reference records in {:.2}s",
+                records.len(),
+                elapsed.as_secs_f64()
+            );
+        }
+        
+        #[cfg(not(feature = "progress"))]
         println!(
             "Successfully loaded {} taxonomy reference records in {:.2}s",
             records.len(),
@@ -392,6 +421,17 @@ impl NppesReader {
         }
         
         let elapsed = start_time.elapsed();
+        
+        #[cfg(feature = "progress")]
+        if self.show_progress_bar {
+            println!(
+                "Successfully loaded {} other name records in {:.2}s",
+                records.len(),
+                elapsed.as_secs_f64()
+            );
+        }
+        
+        #[cfg(not(feature = "progress"))]
         println!(
             "Successfully loaded {} other name records in {:.2}s",
             records.len(),
@@ -439,6 +479,17 @@ impl NppesReader {
         }
         
         let elapsed = start_time.elapsed();
+        
+        #[cfg(feature = "progress")]
+        if self.show_progress_bar {
+            println!(
+                "Successfully loaded {} practice location records in {:.2}s",
+                records.len(),
+                elapsed.as_secs_f64()
+            );
+        }
+        
+        #[cfg(not(feature = "progress"))]
         println!(
             "Successfully loaded {} practice location records in {:.2}s",
             records.len(),
@@ -486,6 +537,17 @@ impl NppesReader {
         }
         
         let elapsed = start_time.elapsed();
+        
+        #[cfg(feature = "progress")]
+        if self.show_progress_bar {
+            println!(
+                "Successfully loaded {} endpoint records in {:.2}s",
+                records.len(),
+                elapsed.as_secs_f64()
+            );
+        }
+        
+        #[cfg(not(feature = "progress"))]
         println!(
             "Successfully loaded {} endpoint records in {:.2}s",
             records.len(),
@@ -521,9 +583,11 @@ impl NppesReader {
         let npi_str = get_required_field(0, "NPI")?;
         let npi = Npi::new(npi_str.clone()).map_err(|_| NppesError::invalid_npi(&npi_str))?;
         
-        let entity_type_str = get_required_field(1, "Entity Type Code")?;
-        let entity_type = EntityType::from_code(&entity_type_str)
-            .map_err(|_| NppesError::invalid_entity_type(&entity_type_str))?;
+        let entity_type_str = get_field(1);
+        let entity_type = match entity_type_str {
+            Some(ref s) => EntityType::from_code(s).ok(),
+            None => None,
+        };
         
         let replacement_npi = get_field(2).map(|s| Npi::new(s)).transpose()
             .map_err(|e| e)?;
@@ -531,20 +595,20 @@ impl NppesReader {
         
         // Provider names
         let provider_name = ProviderName {
-            prefix: get_field(9),
+            prefix: get_field(9).as_deref().and_then(NamePrefixCode::from_code),
             first: get_field(7),
             middle: get_field(8),
             last: get_field(6),
-            suffix: get_field(10),
+            suffix: get_field(10).as_deref().and_then(NameSuffixCode::from_code),
             credential: get_field(11),
         };
         
         let provider_other_name = ProviderName {
-            prefix: get_field(17),
+            prefix: get_field(17).as_deref().and_then(NamePrefixCode::from_code),
             first: get_field(15),
             middle: get_field(16),
             last: get_field(14),
-            suffix: get_field(18),
+            suffix: get_field(18).as_deref().and_then(NameSuffixCode::from_code),
             credential: get_field(19),
         };
         
@@ -552,7 +616,7 @@ impl NppesReader {
         let organization_name = OrganizationName {
             legal_business_name: get_field(4),
             other_name: get_field(12),
-            other_name_type_code: get_field(13),
+            other_name_type: get_field(13).as_deref().and_then(OtherProviderNameTypeCode::from_code),
         };
         
         // Addresses
@@ -560,22 +624,22 @@ impl NppesReader {
             line_1: get_field(20),
             line_2: get_field(21),
             city: get_field(22),
-            state: get_field(23),
             postal_code: get_field(24),
-            country_code: get_field(25),
             telephone: get_field(26),
             fax: get_field(27),
+            state: get_field(23).as_deref().and_then(StateCode::from_code),
+            country: get_field(25).as_deref().map(CountryCode::from_code),
         };
         
         let practice_address = Address {
             line_1: get_field(28),
             line_2: get_field(29),
             city: get_field(30),
-            state: get_field(31),
             postal_code: get_field(32),
-            country_code: get_field(33),
             telephone: get_field(34),
             fax: get_field(35),
+            state: get_field(31).as_deref().and_then(StateCode::from_code),
+            country: get_field(33).as_deref().map(CountryCode::from_code),
         };
         
         // Dates
@@ -589,6 +653,8 @@ impl NppesReader {
         for i in 0..MAX_TAXONOMY_CODES {
             let base_index = 47 + (i * 4);
             if let Some(code) = get_field(base_index) {
+                let group_taxonomy_code = get_field(307 + i).as_deref().and_then(GroupTaxonomyCode::from_code);
+                let primary_switch = get_field(base_index + 3).as_deref().and_then(PrimaryTaxonomySwitch::from_code);
                 let taxonomy_code = TaxonomyCode {
                     code,
                     license_number: get_field(base_index + 1),
@@ -596,15 +662,12 @@ impl NppesReader {
                     is_primary: get_field(base_index + 3)
                         .map(|s| s == "Y")
                         .unwrap_or(false),
-                    taxonomy_group: None, // Will be filled later
+                    taxonomy_group: get_field(307 + i),
+                    group_taxonomy_code,
+                    primary_switch,
                 };
                 taxonomy_codes.push(taxonomy_code);
             }
-        }
-        
-        // Update taxonomy groups (starting from column 307)
-        for (i, taxonomy) in taxonomy_codes.iter_mut().enumerate() {
-            taxonomy.taxonomy_group = get_field(307 + i);
         }
         
         // Parse other identifiers (starting from column 107)
@@ -612,40 +675,51 @@ impl NppesReader {
         for i in 0..MAX_OTHER_IDENTIFIERS {
             let base_index = 107 + (i * 4);
             if let Some(identifier) = get_field(base_index) {
+                let state = get_field(base_index + 2).as_deref().and_then(StateCode::from_code);
+                let issuer = get_field(base_index + 3).as_deref().and_then(OtherProviderIdentifierIssuerCode::from_code);
                 let other_id = OtherIdentifier {
                     identifier,
                     type_code: get_field(base_index + 1),
-                    state: get_field(base_index + 2),
-                    issuer: get_field(base_index + 3),
+                    issuer,
+                    state,
                 };
                 other_identifiers.push(other_id);
             }
         }
         
         // Authorized official (for organizations)
-        let authorized_official = if entity_type == EntityType::Organization {
+        let authorized_official = if entity_type == Some(EntityType::Organization) {
             Some(AuthorizedOfficial {
-                last_name: get_field(42),
+                prefix: get_field(308).as_deref().and_then(NamePrefixCode::from_code),
                 first_name: get_field(43),
                 middle_name: get_field(44),
+                last_name: get_field(42),
+                suffix: get_field(309).as_deref().and_then(NameSuffixCode::from_code),
+                credential: get_field(310),
                 title: get_field(45),
                 telephone: get_field(46),
-                name_prefix: get_field(308),
-                name_suffix: get_field(309),
-                credential: get_field(310),
             })
         } else {
             None
         };
         
         // Organization flags and parent info (near the end)
-        let is_sole_proprietor = get_field(307).map(|s| s == "Y");
-        let is_organization_subpart = get_field(308).map(|s| s == "Y");
+        let sole_proprietor = get_field(307).as_deref().and_then(SoleProprietorCode::from_code);
+        let organization_subpart = get_field(308).as_deref().and_then(SubpartCode::from_code);
         let parent_organization_lbn = get_field(309);
         let parent_organization_tin = get_field(310);
         
         // Certification date (last column)
         let certification_date = get_field(329).map(|s| self.parse_date(&s)).transpose()?;
+        
+        // Deactivation reason and gender codes
+        let deactivation_reason_code = get_field(38);
+        let deactivation_reason = deactivation_reason_code.as_deref().and_then(DeactivationReasonCode::from_code);
+        let provider_gender_code = get_field(41);
+        let provider_gender = provider_gender_code.as_deref().and_then(SexCode::from_code);
+        // Provider other name type code
+        let provider_other_name_type_code = get_field(20);
+        let provider_other_name_type = provider_other_name_type_code.as_deref().and_then(OtherProviderNameTypeCode::from_code);
         
         Ok(NppesRecord {
             npi,
@@ -654,7 +728,7 @@ impl NppesReader {
             ein,
             provider_name,
             provider_other_name,
-            provider_other_name_type_code: get_field(20),
+            provider_other_name_type,
             organization_name,
             mailing_address,
             practice_address,
@@ -663,13 +737,13 @@ impl NppesReader {
             deactivation_date,
             reactivation_date,
             certification_date,
-            deactivation_reason_code: get_field(38),
-            provider_gender_code: get_field(41),
+            deactivation_reason,
+            provider_gender,
             authorized_official,
             taxonomy_codes,
             other_identifiers,
-            is_sole_proprietor,
-            is_organization_subpart,
+            sole_proprietor,
+            organization_subpart,
             parent_organization_lbn,
             parent_organization_tin,
         })
@@ -742,11 +816,11 @@ impl NppesReader {
             line_1: get_field(1),
             line_2: get_field(2),
             city: get_field(3),
-            state: get_field(4),
             postal_code: get_field(5),
-            country_code: get_field(6),
             telephone: get_field(7),
             fax: get_field(9),
+            state: get_field(4).as_deref().and_then(StateCode::from_code),
+            country: get_field(6).as_deref().map(CountryCode::from_code),
         };
         
         Ok(PracticeLocationRecord {
@@ -779,11 +853,11 @@ impl NppesReader {
                 line_1: get_field(13),
                 line_2: get_field(14),
                 city: get_field(15),
-                state: get_field(16),
                 postal_code: get_field(18),
-                country_code: get_field(17),
                 telephone: None,
                 fax: None,
+                state: get_field(16).as_deref().and_then(StateCode::from_code),
+                country: get_field(17).as_deref().map(CountryCode::from_code),
             })
         } else {
             None

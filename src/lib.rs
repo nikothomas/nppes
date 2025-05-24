@@ -1,17 +1,17 @@
 /*!
  * # NPPES (National Plan and Provider Enumeration System) Data Library
  * 
- * A comprehensive Rust library for working with NPPES healthcare provider data.
+ * A Rust library for working with NPPES healthcare provider data.
  * 
  * ## Features
  * 
- * - 🚀 **High Performance**: Efficient parsing of 9.9GB+ datasets with progress tracking
- * - 🔧 **Easy to Use**: Simple builder pattern for loading complete datasets
- * - 📊 **Rich Analytics**: Built-in querying and statistical analysis
- * - 💾 **Multiple Export Formats**: JSON, CSV, SQL, and more
- * - 🔍 **Fast Lookups**: Automatic indexing for O(1) provider lookups
- * - 🧩 **Modular Design**: Load only the data you need
- * - 🛡️ **Type Safe**: Strongly typed data structures with validation
+ * - High performance: Efficient parsing of large datasets with progress tracking
+ * - Builder pattern for loading datasets
+ * - Querying and statistical analysis
+ * - Multiple export formats: JSON, CSV, SQL, and more
+ * - Indexing for provider lookups
+ * - Modular design: Load only the data required
+ * - Type-safe data structures with validation
  * 
  * ## Quick Start
  * 
@@ -19,10 +19,10 @@
  * use nppes::prelude::*;
  * 
  * # fn main() -> Result<()> {
- * // Simple one-liner to load all NPPES data from a directory
+ * // Load all NPPES data from a directory
  * let dataset = NppesDataset::load_standard("./data")?;
  * 
- * // Find providers
+ * // Query providers
  * let ca_cardiologists = dataset
  *     .query()
  *     .state("CA")
@@ -35,7 +35,7 @@
  * // Export results
  * dataset.export_subset(
  *     "ca_cardiologists.json",
- *     |p| p.mailing_address.state.as_deref() == Some("CA"),
+ *     |p| p.mailing_address.state.as_ref().map(|s| s.as_code()) == Some("CA"),
  *     ExportFormat::Json
  * )?;
  * # Ok(())
@@ -64,7 +64,7 @@
  * ```no_run
  * # use nppes::prelude::*;
  * # fn main() -> Result<()> {
- * // Check memory requirements before loading
+ * // Estimate memory requirements before loading
  * let estimate = NppesReader::estimate_memory_usage("data/npidata_pfile.csv")?;
  * println!("Estimated memory usage: {}", estimate.estimated_memory_human);
  * # Ok(())
@@ -141,8 +141,8 @@
  * // Export filtered subset
  * dataset.export_subset(
  *     "texas_organizations.json",
- *     |p| p.entity_type == EntityType::Organization && 
- *         p.mailing_address.state.as_deref() == Some("TX"),
+ *     |p| p.entity_type == Some(EntityType::Organization) && 
+ *         p.mailing_address.state.as_ref().map(|s| s.as_code()) == Some("TX"),
  *     ExportFormat::Json
  * )?;
  * # Ok(())
@@ -171,28 +171,28 @@
  * # }
  * ```
  * 
- * ## Performance Tips
+ * ## Performance Considerations
  * 
- * 1. **Use Indexes**: The dataset automatically builds indexes for fast lookups
- * 2. **Enable Parallel Processing**: Use the `parallel` feature for faster operations
- * 3. **Skip Invalid Records**: Set `skip_invalid_records(true)` for resilient parsing
- * 4. **Memory Estimation**: Check memory requirements before loading large files
- * 5. **Progress Tracking**: Enable progress bars for long operations
+ * 1. Use indexes for fast lookups
+ * 2. Enable parallel processing with the `parallel` feature
+ * 3. Skip invalid records for resilient parsing
+ * 4. Estimate memory requirements before loading large files
+ * 5. Enable progress bars for long operations
  * 
  * ## NPPES Data Files
  * 
- * The library supports all NPPES file types:
+ * The library supports the following NPPES file types:
  * 
- * - **Main Data File**: `npidata_pfile_YYYYMMDD-YYYYMMDD.csv` (~9.9GB)
- * - **Other Names**: `othername_pfile_YYYYMMDD-YYYYMMDD.csv`
- * - **Practice Locations**: `pl_pfile_YYYYMMDD-YYYYMMDD.csv`
- * - **Endpoints**: `endpoint_pfile_YYYYMMDD-YYYYMMDD.csv`
- * - **Taxonomy Reference**: `nucc_taxonomy_XXX.csv`
+ * - Main Data File: `npidata_pfile_YYYYMMDD-YYYYMMDD.csv`
+ * - Other Names: `othername_pfile_YYYYMMDD-YYYYMMDD.csv`
+ * - Practice Locations: `pl_pfile_YYYYMMDD-YYYYMMDD.csv`
+ * - Endpoints: `endpoint_pfile_YYYYMMDD-YYYYMMDD.csv`
+ * - Taxonomy Reference: `nucc_taxonomy_XXX.csv`
  * 
- * Download files from: https://download.cms.gov/nppes/NPI_Files.html
+ * Data files are available at: https://download.cms.gov/nppes/NPI_Files.html
  */
 
-// Re-export error types from root
+ // Re-export error types from root
 pub use error::{NppesError, Result, ErrorContext, ExportFormat};
 
 // Public modules
@@ -204,6 +204,7 @@ pub mod analytics;
 pub mod dataset;
 pub mod export;
 pub mod config;
+pub mod download;
 
 /// Prelude module for convenient imports
 /// 
@@ -283,8 +284,8 @@ pub mod cookbook {
         let mut distribution = HashMap::new();
         
         for provider in &dataset.providers {
-            if let Some(state) = &provider.mailing_address.state {
-                *distribution.entry(state.clone()).or_insert(0) += 1;
+            if let Some(state) = provider.mailing_address.state.as_ref().map(|s| s.as_code()) {
+                *distribution.entry(state.to_string()).or_insert(0) += 1;
             }
         }
         

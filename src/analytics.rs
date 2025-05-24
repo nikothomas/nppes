@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use chrono::NaiveDate;
+use std::sync::Arc;
 
 use crate::{
     Result, NppesError,
@@ -68,7 +69,7 @@ impl<'a> NppesAnalytics<'a> {
     pub fn dataset_stats(&self) -> DatasetStats {
         let total_providers = self.providers.len();
         let individual_count = self.providers.iter()
-            .filter(|p| p.entity_type == EntityType::Individual)
+            .filter(|p| p.entity_type == Some(EntityType::Individual))
             .count();
         let organization_count = total_providers - individual_count;
         
@@ -79,6 +80,7 @@ impl<'a> NppesAnalytics<'a> {
         
         let unique_states = self.providers.iter()
             .filter_map(|p| p.mailing_address.state.as_ref())
+            .map(|s| s.as_code())
             .collect::<HashSet<_>>()
             .len();
         
@@ -118,10 +120,11 @@ impl<'a> NppesAnalytics<'a> {
     
     /// Find providers by state
     pub fn find_by_state(&self, state: &str) -> Vec<&NppesRecord> {
+        let state_enum = StateCode::from_code(state);
         self.providers.iter()
             .filter(|p| {
                 p.mailing_address.state.as_ref()
-                    .map(|s| s.eq_ignore_ascii_case(state))
+                    .map(|s| Some(s) == state_enum.as_ref())
                     .unwrap_or(false)
             })
             .collect()
@@ -139,7 +142,7 @@ impl<'a> NppesAnalytics<'a> {
     /// Find providers by entity type
     pub fn find_by_entity_type(&self, entity_type: EntityType) -> Vec<&NppesRecord> {
         self.providers.iter()
-            .filter(|p| p.entity_type == entity_type)
+            .filter(|p| p.entity_type.as_ref() == Some(&entity_type))
             .collect()
     }
     
@@ -149,7 +152,7 @@ impl<'a> NppesAnalytics<'a> {
         
         for provider in self.providers {
             if let Some(state) = &provider.mailing_address.state {
-                *counts.entry(state.clone()).or_insert(0) += 1;
+                *counts.entry(state.as_code().to_string()).or_insert(0) += 1;
             }
         }
         
@@ -174,7 +177,9 @@ impl<'a> NppesAnalytics<'a> {
         let mut counts = HashMap::new();
         
         for provider in self.providers {
-            *counts.entry(provider.entity_type.clone()).or_insert(0) += 1;
+            if let Some(ref entity_type) = provider.entity_type {
+                *counts.entry(entity_type.clone()).or_insert(0) += 1;
+            }
         }
         
         counts
@@ -307,7 +312,7 @@ impl<'a> NppesAnalytics<'a> {
         
         for provider in self.providers {
             if let Some(state) = &provider.mailing_address.state {
-                index.entry(state.clone())
+                index.entry(state.as_code().to_string())
                     .or_insert_with(Vec::new)
                     .push(provider);
             }
@@ -387,16 +392,17 @@ impl<'a> ProviderQuery<'a> {
     
     /// Filter by entity type
     pub fn entity_type(mut self, entity_type: EntityType) -> Self {
-        self.filters.push(Box::new(move |p| p.entity_type == entity_type));
+        let entity_type = Arc::new(entity_type);
+        self.filters.push(Box::new(move |p| p.entity_type.as_ref() == Some(&*entity_type)));
         self
     }
     
     /// Filter by state
     pub fn state<S: AsRef<str> + 'a>(mut self, state: S) -> Self {
-        let state = state.as_ref().to_string();
+        let state_enum = StateCode::from_code(state.as_ref());
         self.filters.push(Box::new(move |p| {
             p.mailing_address.state.as_ref()
-                .map(|s| s.eq_ignore_ascii_case(&state))
+                .map(|s| Some(s) == state_enum.as_ref())
                 .unwrap_or(false)
         }));
         self
