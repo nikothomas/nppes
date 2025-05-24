@@ -12,7 +12,6 @@ use std::sync::Arc;
 use crate::{
     Result, NppesError,
     data_types::*,
-    constants::*,
 };
 
 /// Analytics engine for NPPES data analysis

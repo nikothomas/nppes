@@ -5,7 +5,6 @@
  * for all NPPES data files as specified in the official documentation.
  */
 
-use crate::constants::{MAX_TAXONOMY_CODES, MAX_OTHER_IDENTIFIERS};
 
 /// Main NPPES data file schema
 /// 

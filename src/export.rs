@@ -13,7 +13,6 @@ use serde_json;
 use crate::{Result, NppesError, ExportFormat};
 use crate::data_types::*;
 use crate::dataset::NppesDataset;
-use crate::reader::NppesReader;
 
 #[cfg(feature = "arrow-export")]
 use arrow::array::*;

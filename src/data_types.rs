@@ -7,7 +7,6 @@
 
 use serde::{Deserialize, Serialize};
 use chrono::NaiveDate;
-use crate::constants::{MAX_TAXONOMY_CODES, MAX_OTHER_IDENTIFIERS};
 
 /// NPI (National Provider Identifier) - 10 digit unique identifier
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

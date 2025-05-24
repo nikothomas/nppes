@@ -16,8 +16,6 @@ use tokio;
 #[cfg(feature = "download")]
 use tempfile::TempDir;
 
-#[cfg(feature = "progress")]
-use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{Result, NppesError};
 

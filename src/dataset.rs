@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
-use crate::{Result, NppesError, ErrorContext};
+use crate::{Result, NppesError};
 use crate::data_types::*;
 use crate::reader::NppesReader;
 use crate::analytics::NppesAnalytics;
