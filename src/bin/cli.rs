@@ -185,10 +185,19 @@ fn cmd_export(args: ExportArgs) {
 
 #[cfg(feature = "download")]
 fn cmd_download(args: DownloadArgs) {
-    use nppes::download::NppesDownloader;
+    use nppes::download::{NppesDownloader, DownloadConfig};
     use tokio::runtime::Runtime;
-    let mut downloader = NppesDownloader::new();
+    
+    // Create download configuration with the specified output directory
+    let config = DownloadConfig {
+        download_dir: Some(args.out_dir.clone()),
+        keep_files: true, // Keep files since user specified a directory
+        ..Default::default()
+    };
+    
+    let mut downloader = NppesDownloader::with_config(config);
     let rt = Runtime::new().expect("Failed to create tokio runtime");
+    
     match rt.block_on(downloader.download_latest_nppes()) {
         Ok(files) => {
             println!("Download and extraction complete: {}", files.summary());
