@@ -5,7 +5,7 @@ edition = "2024"
 authors = ["Nikolas Yanek-Chrones <research@icarai.io>"]
 description = "A Rust library for parsing, querying, and exporting NPPES healthcare provider data."
 repository = "https://github.com/nikothomas/nppes"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 keywords = ["nppes", "healthcare", "npi", "provider", "data"]
 categories = ["data-structures", "parser-implementations"]
 
