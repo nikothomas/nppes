@@ -48,22 +48,17 @@ pub struct NppesConfig {
 }
 
 /// Validation level for data parsing
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ValidationLevel {
     /// No validation, fastest parsing
     None,
     /// Basic validation (NPI format, required fields)
     Basic,
     /// Standard validation (recommended)
+    #[default]
     Standard,
     /// Strict validation (all fields, may reject valid data)
     Strict,
-}
-
-impl Default for ValidationLevel {
-    fn default() -> Self {
-        ValidationLevel::Standard
-    }
 }
 
 impl Default for NppesConfig {
